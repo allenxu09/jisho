@@ -2,7 +2,6 @@
 from re import fullmatch as fm
 from configparser import ConfigParser
 from time import time
-from copy import deepcopy as dcopy # prevent error from shallow copy
 
 #%% GLOBAL VARIABLES
 DICT_PATH = "buta014.dic"
@@ -93,7 +92,7 @@ for i in ALLOW:
     TRANS[i] = i
 
 # Read File
-with open(DICT_PATH, 'r', encoding = ENCODING) as f:
+with open(DICT_PATH, 'r', encoding=ENCODING) as f:
     file = f.readlines()
 dict = [i.strip() for i in file]
 
@@ -101,6 +100,23 @@ dict = [i.strip() for i in file]
 hasht = {}
 for i in dict:
     hasht[hash(i)] = i
+
+# Create indices for faster lookup
+dict_by_length = {}
+dict_by_first_char = {}
+for word in dict:
+    # Index by length
+    length = len(word)
+    if length not in dict_by_length:
+        dict_by_length[length] = []
+    dict_by_length[length].append(word)
+    
+    # Index by first character
+    if word:
+        first_char = word[0]
+        if first_char not in dict_by_first_char:
+            dict_by_first_char[first_char] = []
+        dict_by_first_char[first_char].append(word)
 
 # i18n
 config = ConfigParser()
@@ -110,9 +126,12 @@ config.read("./i18n.cfg",encoding="utf-8")
 
 class JishoSearcher():
     #%% Initialization & Other Functions
-    def  __init__(self, lang:str="en"):
+    def  __init__(self, lang: str = "en"):
         # Language Setup
         self.lang = lang
+        # Cache for compiled patterns and results
+        self._pattern_cache = {}
+        self._result_cache = {}
 
 
     # Raise an error message
@@ -227,11 +246,8 @@ class JishoSearcher():
         return expr
         
     # Whether the expression is in the dictionary
-    def _indict(self, expr:str) -> bool:
-        try:
-            return (hasht[hash(expr)] == expr)
-        except KeyError: # not in the hash table
-            return False
+    def _indict(self, expr: str) -> bool:
+        return expr in hasht
     
     # Permutation of the expression (for <...>)
     def _permutation(self, expr: str):
@@ -524,13 +540,13 @@ class JishoSearcher():
                     for i in res:
                         for j in words[pointer]:
                             res2.append(i+j)
-                    res = dcopy(res2)
+                    res = res2
 
                 elif type(words[pointer]) == str: # normal
                     res2 = []
                     for i in res:
                         res2.append(i+words[pointer])
-                    res = dcopy(res2)
+                    res = res2
                 pointer += 1
             
             # _atQAT
@@ -705,7 +721,14 @@ class JishoSearcher():
         else:
             exprssion = self.qat_exprs[depth]
             if type(exprssion) == str: # normal expression
-                for word in dict: # iterate the dictionary
+                # Use optimized search candidates for QAT as well
+                search_candidates = dict
+                if hasattr(exprssion, '__len__') and isinstance(exprssion, str) and '.*' not in exprssion and '.' not in exprssion:
+                    target_length = len(exprssion)
+                    if target_length in dict_by_length:
+                        search_candidates = dict_by_length[target_length]
+                
+                for word in search_candidates: # iterate the dictionary
                     if self._nfm(exprssion, word) == True:
                         self.qat_current_answer[depth] = word
                         self._qat(depth + 1)
@@ -716,7 +739,7 @@ class JishoSearcher():
 
                 # Substitute defined QAT letters
                 # Find undefined letters
-                expr, format = dcopy(exprssion[1]), dcopy(exprssion[2])
+                expr, format = exprssion[1][:], exprssion[2][:]  # Shallow copy instead of deep copy
                 undefined = []
                 for i in range(len(expr)): # Substitute
                     if expr[i] in ULETTER: # QAT letter
@@ -736,7 +759,7 @@ class JishoSearcher():
                     for case in split:
                         # Build new expr
                         valid = True
-                        expr_new = dcopy(expr)
+                        expr_new = expr[:]  # Shallow copy
                         defined = []
                         defined_val = []
                         for i in range(len(expr)):
@@ -761,7 +784,6 @@ class JishoSearcher():
 
                         if self._nfm("".join(expr_new), word) == True: # Match
                             # Update current letters
-                            updated = []
                             for i in undefined:
                                 self.qat_current_letters[ord(expr[i])-65] = case[i]
 
@@ -778,7 +800,12 @@ class JishoSearcher():
     #%% Search (Main Processing)
 
     # Search
-    def search(self, expr: str, num:int = 200) -> str:
+    def search(self, expr: str, num: int = 200) -> str:
+        # Check cache first
+        cache_key = (expr, num)
+        if cache_key in self._result_cache:
+            return self._result_cache[cache_key]
+            
         self._setup_qat()
         # Empty
         if expr == "":
@@ -798,7 +825,18 @@ class JishoSearcher():
             res = []
             res_len = 0
             start_time = time()
-            for i in dict: # Search
+            
+            # Use optimized search based on pattern characteristics
+            search_candidates = dict  # Default: search all
+            
+            # If we can determine a fixed length, use length index
+            if hasattr(expr_re, '__len__') and isinstance(expr_re, str) and '.*' not in expr_re and '.' not in expr_re:
+                # Simple string match - exact length
+                target_length = len(expr_re)
+                if target_length in dict_by_length:
+                    search_candidates = dict_by_length[target_length]
+            
+            for i in search_candidates: # Search
                 if self._nfm(expr_re, i) == True: # Match
                     res_len += 1
                     res.append(i)
@@ -808,6 +846,8 @@ class JishoSearcher():
                 if time() - start_time > TIME_LIMIT: # timeout
                     return self._error("timeout")
 
+            # Cache the result
+            self._result_cache[cache_key] = res
             return res
         
         # - QAT QAQ
@@ -899,76 +939,38 @@ class JishoSearcher():
             if self.qat_error[0] == "#": # Error
                 return self.qat_error
             else:
+                # Cache QAT results
+                self._result_cache[cache_key] = self.qat_answers
                 return self.qat_answers
-
-            # else: # No letters, Special Case (combination of non-qat solutions)
-            #     res = []
-            #     start_time = time()
-
-            #     # Search for each expression
-            #     for i in range(len(exprs)):
-            #         expr_re = self._process_normal(exprs[i])
-            #         if expr_re[0] == "#": # Error
-            #             return expr_re
-                    
-            #         subres = []
-
-            #         # Search
-            #         for j in dict:
-            #             if self._nfm(expr_re, j) == True: # Match
-            #                 subres.append(j)
-            #                 if len(subres) == num:
-            #                     break
-
-            #             if time() - start_time > TIME_LIMIT: # timeout
-            #                 return self._error("timeout")
-                        
-            #         # Store
-            #         res.append(subres)
-
-            #     # Combine
-            #     answer = []
-            #     for i in range(num):
-            #         tmp = ""
-                    
-            #         for j in range(len(exprs)):
-            #             if i < len(res[j]): # Available
-            #                 tmp += res[j][i] + ";"
-            #             else:
-            #                 tmp = "#" + tmp
-
-            #         if tmp[0] == "#" or tmp == "": # No more answers
-            #             break
-
-            #         answer.append(tmp[:-1])
-
-            #     return answer
     
-    # print the result
-    def search_print(self, expr: str, num:int = 200, file = False) -> None: 
-        a = time()
+    # print the result  
+    def search_print(self, expr: str, num: int = 200, file=False) -> None:
+        start_time = time()
         try:
             res = self.search(expr, num=num)
         except Exception as e:
             print(f"Unexpected Error: {str(e)}")
             return
         
+        elapsed = time() - start_time
         print(f"Expr:{expr}")
-        print(f"Found {len(res)} items in {time() - a:.2f} seconds:")
+        print(f"Found {len(res)} items in {elapsed:.2f} seconds:")
         print()
 
-        if res == []:
+        if not res:
             print("No Solution.")
-
-        elif res[0] == "#": # Error
-            print(res)
+        elif isinstance(res, list) and res and res[0].startswith("#"):  # Error
+            print(res[0])
         else:
-            for i in range(len(res)):
-                print(res[i], end="")
-                print(("\n" if (i%10) == 9 else "\t"),end="")
+            # More efficient output formatting
+            for i, item in enumerate(res):
+                print(item, end="")
+                if (i + 1) % 10 == 0:
+                    print()  # newline every 10 items
+                else:
+                    print("\t", end="")
         
-        print()
-        print()
+        print("\n")
     #%% END
 
 #%% Main Programme

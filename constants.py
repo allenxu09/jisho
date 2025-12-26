@@ -5,6 +5,8 @@ from time import time
 DEBUG = True
 if DEBUG:
     import tqdm
+    
+dprint = lambda x:print if DEBUG else str # print if debug
 
 DICT_PATH = "jisho.dic"
 ENCODING = "shift_JIS"
@@ -67,7 +69,7 @@ UN_SEMI_VOICED_KANA = "はひふへほ#"
 ULETTER = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 LLETTER = set("abcdefghijklmnopqrstuvwxyz")
 
-PUNC = set("?*[-]&|!()<>@;=\"\'{}")
+PUNC = set("%?*[-]&|!()<>@;=\"\'{}")
 
 NUM = set("0123456789")
 

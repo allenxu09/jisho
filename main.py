@@ -323,10 +323,10 @@ class JishoSearcher():
 
         return res
     
-    # Process @ and QAT letters
+    # Process @, QAT letters and functions
     # and pass it to _regex
-    def _atQAT(self, expr:str) -> str: # TODO
-        if "@" in expr or (any([c.isalpha() and c.isupper() for c in expr])): # has @ or QAT letters
+    def _atQATf(self, expr:str) -> str: # TODO
+        if "@" in expr or "%" in expr or (any([c.isalpha() and c.isupper() for c in expr])): # has @ or QAT letters
             # break down & format
             exprs = []
             counter = 0
@@ -351,7 +351,38 @@ class JishoSearcher():
                         exprs.append(letter)
 
                     counter += 1
-
+                
+                elif letter == '%': # Function
+                    begin = counter
+                    counter += 1
+                    while counter < len(expr) and expr[counter] != "%":
+                        counter += 1
+                    if counter == len(expr): # No ending %
+                        return self._error("syntax", ex=expr[begin:])
+                    
+                    func = expr[begin+1:counter]
+                    dprint(func)
+                    
+                    counter += 1
+                    if expr[counter] != '(': # No opening (
+                        return self._error("syntax", ex=expr[begin:])
+                    counter += 1
+                    while counter < len(expr) and expr[counter] == ")":
+                        counter += 1
+                    if counter == len(expr): # No closing )
+                        return self._error("syntax", ex=expr[begin:])
+                    para = expr[begin+len(func)+2:counter-1]
+                    dprint(para)
+                    
+                    if para in ULETTER:
+                        if len(para) != 1:
+                            return self._error("syntax", ex=expr[begin:])
+                        format.append(self.qat_letters[ord(para)-65])
+                        exprs.append(para + "_" + func)
+                    else:
+                        funced = self._func
+                    #######
+                    
                 else: # Normal expression: _regex
                     begin = counter
                     while counter < len(expr) and expr[counter] != "@" and (expr[counter] not in ULETTER):
@@ -367,7 +398,7 @@ class JishoSearcher():
 
     # Turn the expression into regex tree
     # Permutate <...>
-    # and pass it to _atQAT
+    # and pass it to _atQATf
     # lg: less than, greater than
     def _lg(self, expr:str) -> str:
         if "<" in expr:
@@ -408,8 +439,8 @@ class JishoSearcher():
                     res = res2
                 pointer += 1
             
-            # _atQAT
-            res = [self._atQAT(i) for i in res]
+            # _atQATf
+            res = [self._atQATf(i) for i in res]
 
             for i in res:
                 if i[0] == "#": # Error
@@ -417,7 +448,7 @@ class JishoSearcher():
                 
             return ['|', res]
         else:
-            return self._atQAT(expr)
+            return self._atQATf(expr)
 
     # Process global &|! (gb: global boolean)
     # and pass it to _lg
@@ -499,9 +530,9 @@ class JishoSearcher():
     def _process_normal(self, expr:str):
         return self._gb(expr)
 
-    # Process QAT Expression (_atQAT)
+    # Process QAT Expression (_atQATf)
     def _process_qat(self, expr:str):
-        return self._atQAT(expr)
+        return self._atQATf(expr)
     
     #%% Match: Normal
 
@@ -548,6 +579,25 @@ class JishoSearcher():
                 return False
 
     #%% Match: QAT QAQ
+    
+    # FUNCTIONS
+    def _func(self, func:int, letter:str) -> str: # do a function
+        ans = ""
+        for i in letter:
+            ans += self.func[func][2][self.func[func][1].find(i)]
+            if ans[-1] == '#': # NOT FOUND
+                return '#'
+            
+        return ans
+
+    def _unfunc(self, func:int, letter:str) -> str: # undo a function
+        ans = ""
+        for i in letter:
+            ans += self.func[func][1][self.func[func][2].find(i)]
+            if ans[-1] == '#': # NOT FOUND
+                return '#'
+            
+        return ans
     
     # VOICED AND UN-SEMI-VOICED
     def _voice(self, letter:str) -> str: # voice a kana
@@ -602,6 +652,7 @@ class JishoSearcher():
         self.stop = False
         
         self.qat_progress = [] # Progress of QAT
+        
 
     # QAT (dfs)
     def _qat(self, depth:int):
@@ -758,29 +809,48 @@ class JishoSearcher():
     #%% Search (Main Processing)
 
     # Search
-    def search(self, expr: str, num: int = 200) -> str:
-        # Check cache first
-        cache_key = (expr, num)
-        if cache_key in self._result_cache:
-            return self._result_cache[cache_key]
-            
+    def search(self, expr: str, num: int = 200, functions: list = []) -> str:
         self._setup_qat()
+        
+        # QAT?
+        expr_nofunc = expr
+        for item in functions:
+            expr_nofunc = expr_nofunc.replace(item[0], "")
+        qat_chance = sum([i in ULETTER.union(';') for i in expr_nofunc])
+        
         # Empty
         if expr == "":
             return self._error("empty")
+        
+        # Functions
+        if '%' in expr:
+            return self._error("syntax", ex="Invalid %")
+        
+        for item in functions:
+            expr = expr.replace(item[0], f"%{item[0]}%")
         
         expr = self._normalize(expr)
         if expr[0] == '#': # ERR
             return expr
         
-        qat_chance = sum([i in ULETTER.union(';') for i in expr])
-
+        # Only supports one-to-one functions
+        for item in functions:
+            if len(item[1]) != len(item[2]):
+                return self._error("syntax", ex="Function invalid!")
+            for c in item[1]:
+                if item[1].count(c) > 1:
+                    return self._error("syntax", ex="Only supports one-to-one functions.")
+            for c in item[2]:
+                if item[2].count(c) > 1:
+                    return self._error("syntax", ex="Only supports one-to-one functions.")
+                
+        self.func = functions
+        
         # Process
         # - Normal
-        if not qat_chance:
+        if not qat_chance :
             expr_re = self._process_normal(expr)
-            if DEBUG:
-                print(f"Regex expression normal:{expr_re}")
+            dprint(f"Regex expression normal:{expr_re}")
             if expr_re[0] == "#": # Error
                 return expr_re
             
@@ -807,38 +877,51 @@ class JishoSearcher():
 
                 if time() - start_time > TIME_LIMIT: # timeout
                     return self._error("timeout")
-
-            # Cache the result
-            self._result_cache[cache_key] = res
             return res
         
         # - QAT QAQ
         else:
+            self.qat_num_limit = num
+            exprs = expr.split(";")
+            self.qat_letters = [0 for i in range(26)]
+            
             # Reject <>
             if "<" in expr or ">" in expr:
                 return self._error("syntax", ex="< or > in QAT")
             
-            self.qat_num_limit = num
+            # Reject global &|! - optimized check
+            for expr in exprs:
+                bracket_level = 0
+                for char in expr:
+                    if char in '([':
+                        bracket_level += 1
+                    elif char in ')]':
+                        bracket_level -= 1
+                    elif bracket_level == 0 and char in '&|!':
+                        return self._error("syntax", ex=expr)
+            
 
-            exprs = expr.split(";")
-
-            self.qat_letters = [0 for i in range(26)]
-
+            # Register Letters
             for i in range(len(exprs)-1, -1, -1):
                 if exprs[i] == "": # Delete Empty Expressions
                     del exprs[i]
                 else:
                     while exprs[i][0] == '(' and exprs[i][-1] == ')': # Remove unnecessary ()
                         exprs[i] = exprs[i][1:-1]
+                        
                     # Register Existed Letters
                     # 0 : not exist, -1 : exist
-                    for j in range(26):
-                        if chr(j+65) in exprs[i]:
-                            self.qat_letters[j] = -1
-
+                    functioning = False
+                    for j in range(len(exprs[i])):
+                        if exprs[i][j] == "%":
+                            functioning = not functioning
+                        if not functioning  and exprs[i][j] in ULETTER:
+                            self.qat_letters[ord(exprs[i][j])-65] = -1
+            
             if exprs == []: # check if empty
                 return self._error("empty")
 
+            functioning = False
             # Find Length Limitation - optimized
             for i in range(len(exprs) - 1, -1, -1):
                 if '=' in exprs[i]:  # Fixed Length
@@ -865,17 +948,6 @@ class JishoSearcher():
             if exprs == []: # check if empty
                 return self._error("empty")
             
-            # reject global &|! - optimized check
-            for expr in exprs:
-                bracket_level = 0
-                for char in expr:
-                    if char in '([':
-                        bracket_level += 1
-                    elif char in ')]':
-                        bracket_level -= 1
-                    elif bracket_level == 0 and char in '&|!':
-                        return self._error("syntax", ex=expr)
-            
             # Sort expressions by number of uppercase letters (most first)
             qat_order = [i for i in range(len(exprs))]
             qat_order.sort(key=lambda x: sum(c.isupper() and c.isalpha() for c in exprs[x]), reverse=True)
@@ -893,21 +965,28 @@ class JishoSearcher():
             if self.qat_error[0] == "#": # Error
                 return self.qat_error
             else:
-                # Cache QAT results
-                self._result_cache[cache_key] = self.qat_answers
                 return self.qat_answers
     
     # print the result  
-    def search_print(self, expr: str, num: int = 200, file=False) -> None:
+    def search_print(self, expr: str, num: int = 200, functions: list = []) -> None:
         start_time = time()
         try:
-            res = self.search(expr, num=num)
+            res = self.search(expr, num=num, functions=functions)
         except Exception as e:
             print(f"Unexpected Error: {str(e)}")
             return
         
         elapsed = time() - start_time
         print(f"Expr:{expr}")
+        print()
+        
+        if functions:
+            print("Functions:")
+            for item in functions:
+                print(f"{item[0]}: {item[1]} -> {item[2]}")
+        
+        print()
+        
         print(f"Found {len(res)} items in {elapsed:.2f} seconds:")
         print()
 
